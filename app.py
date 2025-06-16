@@ -35,13 +35,17 @@ def health_check():
 
 @app.route('/api/getFlightPrice', methods=['GET'])
 def get_flight_price():
+    debug_info = []
+    
     try:
         # Try to import fast-flights
         try:
             from fast_flights import FlightData, Passengers, get_flights
             from datetime import datetime, timedelta
+            debug_info.append("✅ fast-flights imported successfully")
             use_real_data = True
-        except ImportError:
+        except ImportError as e:
+            debug_info.append(f"❌ fast-flights import failed: {str(e)}")
             use_real_data = False
         
         # Extract parameters
@@ -53,10 +57,14 @@ def get_flight_price():
         travel_days = int(request.args.get('travelDays', 7))
         fare_class = request.args.get('fareClass', 'economy').lower()
         
+        debug_info.append(f"Parameters: {departure_city} → {destination_city}, {target_date}, {travel_days} days")
+        
         if use_real_data and target_date:
             # Get airport codes
             from_airport = get_airport_code(departure_city, departure_country)
             to_airport = get_airport_code(destination_city, destination_country)
+            
+            debug_info.append(f"Airport codes: {from_airport} → {to_airport}")
             
             if from_airport and to_airport:
                 try:
@@ -64,17 +72,24 @@ def get_flight_price():
                     departure_date = datetime.strptime(target_date, '%Y-%m-%d')
                     return_date = departure_date + timedelta(days=travel_days)
                     
+                    debug_info.append(f"Dates: {departure_date.strftime('%Y-%m-%d')} → {return_date.strftime('%Y-%m-%d')}")
+                    
                     # Create flight data
                     flight_data = [
                         FlightData(date=departure_date.strftime('%Y-%m-%d'), from_airport=from_airport, to_airport=to_airport),
                         FlightData(date=return_date.strftime('%Y-%m-%d'), from_airport=to_airport, to_airport=from_airport)
                     ]
                     
+                    debug_info.append("Flight data objects created")
+                    
                     # Map fare class
                     seat_class = 'business' if fare_class == 'business' else 'economy'
                     
                     # Get real flights
                     passengers = Passengers(adults=1, children=0, infants_in_seat=0, infants_on_lap=0)
+                    
+                    debug_info.append("Calling fast-flights get_flights()...")
+                    
                     result = get_flights(
                         flight_data=flight_data,
                         trip="round-trip",
@@ -83,12 +98,19 @@ def get_flight_price():
                         fetch_mode="fallback"
                     )
                     
+                    debug_info.append(f"get_flights() returned: {type(result)}")
+                    
                     if result and result.flights:
+                        debug_info.append(f"Found {len(result.flights)} flights")
                         best_flight = result.flights[0]
+                        
+                        debug_info.append(f"Best flight: {getattr(best_flight, 'name', 'Unknown airline')}")
+                        debug_info.append(f"Flight price: {getattr(best_flight, 'price', 'No price')}")
                         
                         # Try to get real price
                         real_price = None
                         if hasattr(best_flight, 'price') and best_flight.price:
+                            debug_info.append(f"Price found: {best_flight.price} (type: {type(best_flight.price)})")
                             try:
                                 if isinstance(best_flight.price, (int, float)):
                                     real_price = best_flight.price
@@ -96,8 +118,11 @@ def get_flight_price():
                                     clean_price = best_flight.price.replace('$', '').replace(',', '').strip()
                                     if clean_price.replace('.', '').isdigit():
                                         real_price = float(clean_price)
-                            except:
-                                pass
+                                debug_info.append(f"Parsed price: {real_price}")
+                            except Exception as price_error:
+                                debug_info.append(f"Price parsing error: {str(price_error)}")
+                        else:
+                            debug_info.append("No price attribute found")
                         
                         if real_price:
                             return jsonify({
@@ -112,19 +137,31 @@ def get_flight_price():
                                     'arrival': getattr(best_flight, 'arrival', 'Unknown')
                                 },
                                 'source': 'real_google_flights',
+                                'debug': debug_info,
                                 'search_url': f"https://www.google.com/travel/flights?q=Flights%20from%20{from_airport}%20to%20{to_airport}"
                             })
+                    else:
+                        debug_info.append("No flights returned from get_flights()")
+                        
                 except Exception as e:
-                    print(f"Fast-flights error: {str(e)}")
+                    debug_info.append(f"Fast-flights error: {str(e)}")
+            else:
+                debug_info.append("Missing airport codes")
+        else:
+            if not use_real_data:
+                debug_info.append("Not using real data (import failed)")
+            if not target_date:
+                debug_info.append("No target_date provided")
         
         # Fallback to intelligent estimates
-        return get_estimated_price(departure_city, destination_city, fare_class)
+        debug_info.append("Falling back to estimates")
+        return get_estimated_price_with_debug(departure_city, destination_city, fare_class, debug_info)
         
     except Exception as e:
-        print(f"Error: {str(e)}")
-        return get_estimated_price(departure_city, destination_city, fare_class)
+        debug_info.append(f"Major error: {str(e)}")
+        return get_estimated_price_with_debug(departure_city, destination_city, fare_class, debug_info)
 
-def get_estimated_price(departure_city, destination_city, fare_class):
+def get_estimated_price_with_debug(departure_city, destination_city, fare_class, debug_info):
     """Smart price estimates as fallback"""
     route_estimates = {
         ('Manila', 'Tokyo'): 650,
@@ -154,6 +191,7 @@ def get_estimated_price(departure_city, destination_city, fare_class):
         'source': 'estimated',
         'route': f"{departure_city} to {destination_city}",
         'fare_class': fare_class,
+        'debug': debug_info,
         'search_url': f"https://www.google.com/travel/flights?q=Flights%20from%20{departure_city}%20to%20{destination_city}"
     })
 
