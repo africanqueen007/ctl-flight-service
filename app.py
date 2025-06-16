@@ -36,57 +36,126 @@ def health_check():
 @app.route('/api/getFlightPrice', methods=['GET'])
 def get_flight_price():
     try:
+        # Try to import fast-flights
+        try:
+            from fast_flights import FlightData, Passengers, get_flights
+            from datetime import datetime, timedelta
+            use_real_data = True
+        except ImportError:
+            use_real_data = False
+        
         # Extract parameters
         departure_city = request.args.get('departureCity', 'Manila')
+        departure_country = request.args.get('departureCountry', 'Philippines')
         destination_city = request.args.get('destinationCity', 'Tokyo')
+        destination_country = request.args.get('destinationCountry', 'Japan')
+        target_date = request.args.get('targetDate')
+        travel_days = int(request.args.get('travelDays', 7))
         fare_class = request.args.get('fareClass', 'economy').lower()
         
-        # Smart price estimates
-        route_estimates = {
-            ('Manila', 'Tokyo'): 650,
-            ('Manila', 'Seoul'): 580,
-            ('Manila', 'Hong Kong'): 300,
-            ('Manila', 'Singapore'): 350,
-            ('Manila', 'Bangkok'): 400,
-            ('Manila', 'Sydney'): 800,
-            ('Manila', 'London'): 1200,
-            ('Manila', 'New York'): 1400,
-            ('Tokyo', 'Manila'): 650,
-            ('Seoul', 'Manila'): 580,
-            ('Hong Kong', 'Manila'): 300,
-            ('Singapore', 'Manila'): 350,
-            ('Bangkok', 'Manila'): 400,
-            ('Sydney', 'Manila'): 800,
-            ('London', 'Manila'): 1200,
-            ('New York', 'Manila'): 1400,
-        }
+        if use_real_data and target_date:
+            # Get airport codes
+            from_airport = get_airport_code(departure_city, departure_country)
+            to_airport = get_airport_code(destination_city, destination_country)
+            
+            if from_airport and to_airport:
+                try:
+                    # Parse date
+                    departure_date = datetime.strptime(target_date, '%Y-%m-%d')
+                    return_date = departure_date + timedelta(days=travel_days)
+                    
+                    # Create flight data
+                    flight_data = [
+                        FlightData(date=departure_date.strftime('%Y-%m-%d'), from_airport=from_airport, to_airport=to_airport),
+                        FlightData(date=return_date.strftime('%Y-%m-%d'), from_airport=to_airport, to_airport=from_airport)
+                    ]
+                    
+                    # Map fare class
+                    seat_class = 'business' if fare_class == 'business' else 'economy'
+                    
+                    # Get real flights
+                    passengers = Passengers(adults=1, children=0, infants_in_seat=0, infants_on_lap=0)
+                    result = get_flights(
+                        flight_data=flight_data,
+                        trip="round-trip",
+                        seat=seat_class,
+                        passengers=passengers,
+                        fetch_mode="fallback"
+                    )
+                    
+                    if result and result.flights:
+                        best_flight = result.flights[0]
+                        
+                        # Try to get real price
+                        real_price = None
+                        if hasattr(best_flight, 'price') and best_flight.price:
+                            try:
+                                if isinstance(best_flight.price, (int, float)):
+                                    real_price = best_flight.price
+                                elif isinstance(best_flight.price, str):
+                                    clean_price = best_flight.price.replace('$', '').replace(',', '').strip()
+                                    if clean_price.replace('.', '').isdigit():
+                                        real_price = float(clean_price)
+                            except:
+                                pass
+                        
+                        if real_price:
+                            return jsonify({
+                                'error': False,
+                                'price': real_price,
+                                'currency': 'USD',
+                                'flight_details': {
+                                    'airline': getattr(best_flight, 'name', 'Unknown'),
+                                    'duration': getattr(best_flight, 'duration', 'Unknown'),
+                                    'stops': getattr(best_flight, 'stops', 'Unknown'),
+                                    'departure': getattr(best_flight, 'departure', 'Unknown'),
+                                    'arrival': getattr(best_flight, 'arrival', 'Unknown')
+                                },
+                                'source': 'real_google_flights',
+                                'search_url': f"https://www.google.com/travel/flights?q=Flights%20from%20{from_airport}%20to%20{to_airport}"
+                            })
+                except Exception as e:
+                    print(f"Fast-flights error: {str(e)}")
         
-        route = (departure_city, destination_city)
-        price = route_estimates.get(route, 750)
-        
-        # Adjust for business class
-        if fare_class == 'business':
-            price = int(price * 2.5)
-        elif fare_class == 'first':
-            price = int(price * 4)
-        
-        return jsonify({
-            'error': False,
-            'price': price,
-            'currency': 'USD',
-            'source': 'estimated',
-            'route': f"{departure_city} to {destination_city}",
-            'fare_class': fare_class,
-            'search_url': f"https://www.google.com/travel/flights?q=Flights%20from%20{departure_city}%20to%20{destination_city}"
-        })
+        # Fallback to intelligent estimates
+        return get_estimated_price(departure_city, destination_city, fare_class)
         
     except Exception as e:
-        return jsonify({
-            'error': True,
-            'message': f'Error: {str(e)}',
-            'price': 1500,
-            'source': 'fallback'
-        })
+        print(f"Error: {str(e)}")
+        return get_estimated_price(departure_city, destination_city, fare_class)
+
+def get_estimated_price(departure_city, destination_city, fare_class):
+    """Smart price estimates as fallback"""
+    route_estimates = {
+        ('Manila', 'Tokyo'): 650,
+        ('Manila', 'Seoul'): 580,
+        ('Manila', 'Hong Kong'): 300,
+        ('Manila', 'Singapore'): 350,
+        ('Manila', 'Bangkok'): 400,
+        ('Manila', 'Sydney'): 800,
+        ('Manila', 'London'): 1200,
+        ('Manila', 'New York'): 1400,
+        ('Tokyo', 'Manila'): 650,
+        ('Seoul', 'Manila'): 580,
+    }
+    
+    route = (departure_city, destination_city)
+    price = route_estimates.get(route, 750)
+    
+    if fare_class == 'business':
+        price = int(price * 2.5)
+    elif fare_class == 'first':
+        price = int(price * 4)
+    
+    return jsonify({
+        'error': False,
+        'price': price,
+        'currency': 'USD',
+        'source': 'estimated',
+        'route': f"{departure_city} to {destination_city}",
+        'fare_class': fare_class,
+        'search_url': f"https://www.google.com/travel/flights?q=Flights%20from%20{departure_city}%20to%20{destination_city}"
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
