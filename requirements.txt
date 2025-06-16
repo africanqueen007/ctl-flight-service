@@ -1,4 +1,4 @@
 flask==3.0.0
 flask-cors==4.0.0
-fast-flights==2.1.1
+fast-flights==2.2
 gunicorn==21.2.0
